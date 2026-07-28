@@ -50,6 +50,64 @@ describe('API — Authentication', () => {
   });
 });
 
+describe('API — Register', () => {
+  it('สมัครสำเร็จ → role student + ไม่มี password + ได้ token', () => {
+    const username = `cy_api_${Date.now()}`;
+    cy.request('POST', `${BACKEND_URL}/auth/register`, {
+      username,
+      name: 'สมัคร ทดสอบ',
+      password: 'secret123',
+    }).then((res) => {
+      expect(res.status).to.eq(200);
+      expect(res.body.data.token).to.be.a('string').and.not.be.empty;
+      expect(res.body.data.user.role).to.eq('student');
+      expect(res.body.data.user).to.not.have.property('password');
+    });
+  });
+
+  it('username ซ้ำ → 4xx', () => {
+    const body = { username: `cy_dup_${Date.now()}`, name: 'x', password: 'secret123' };
+    cy.request('POST', `${BACKEND_URL}/auth/register`, body).then((res) => {
+      expect(res.status).to.eq(200);
+    });
+    cy.request({
+      method: 'POST',
+      url: `${BACKEND_URL}/auth/register`,
+      body,
+      failOnStatusCode: false,
+    }).then((res) => {
+      expect(res.status).to.be.within(400, 499);
+    });
+  });
+
+  it('รหัสผ่านสั้นเกินไป → 4xx', () => {
+    cy.request({
+      method: 'POST',
+      url: `${BACKEND_URL}/auth/register`,
+      body: { username: `cy_short_${Date.now()}`, name: 'x', password: '123' },
+      failOnStatusCode: false,
+    }).then((res) => {
+      expect(res.status).to.be.within(400, 499);
+    });
+  });
+
+  it('สมัครแล้ว login ต่อได้ด้วยรหัสที่ตั้ง', () => {
+    const username = `cy_login_${Date.now()}`;
+    cy.request('POST', `${BACKEND_URL}/auth/register`, {
+      username,
+      name: 'สมัคร แล้วเข้า',
+      password: 'secret123',
+    }).then(() =>
+      cy
+        .request('POST', `${BACKEND_URL}/auth/login`, { username, password: 'secret123' })
+        .then((res) => {
+          expect(res.status).to.eq(200);
+          expect(res.body.data.user.role).to.eq('student');
+        }),
+    );
+  });
+});
+
 describe('API — Authorization', () => {
   it('ไม่มี token → 401', () => {
     cy.request({ url: `${BACKEND_URL}/courses`, failOnStatusCode: false }).then((res) => {
@@ -371,6 +429,39 @@ describe('API — Access control', () => {
             expect(res.body.data).to.have.length(2);
           }),
       ),
+    );
+  });
+
+  it('GET /rounds — นักศึกษาเห็นเฉพาะรอบที่เปิด, อาจารย์เห็นทั้งหมด', () => {
+    setupClosedRound().then((closed) =>
+      apiLogin(CREDENTIALS.student1.username, CREDENTIALS.student1.password).then(
+        (student) => {
+          // นักศึกษา: ทุกรอบที่เห็นต้อง isOpen และต้องไม่มีรอบปิดที่เพิ่งสร้าง
+          cy
+            .request({
+              url: `${BACKEND_URL}/rounds?courseId=${closed.courseId}`,
+              headers: authHeader(student.token),
+            })
+            .then((res) => {
+              const rounds = res.body.data as { id: string; isOpen: boolean }[];
+              expect(
+                rounds.every((r) => r.isOpen),
+                "ทุกรอบที่นักศึกษาเห็นต้องเปิด"
+              ).to.be.true;
+              expect(rounds.map((r) => r.id)).to.not.include(closed.roundId);
+            });
+          // อาจารย์: ต้องเห็นรอบปิดด้วย
+          return cy
+            .request({
+              url: `${BACKEND_URL}/rounds?courseId=${closed.courseId}`,
+              headers: authHeader(closed.instructorToken),
+            })
+            .then((res) => {
+              const ids = (res.body.data as { id: string }[]).map((r) => r.id);
+              expect(ids, "อาจารย์ต้องเห็นรอบปิดด้วย").to.include(closed.roundId);
+            });
+        }
+      )
     );
   });
 });

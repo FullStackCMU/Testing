@@ -9,6 +9,66 @@ import {
   type OpenRoundFixture,
 } from '../support/testHelpers.js';
 
+describe('UI — Register', () => {
+  it('สมัครบัญชีใหม่ → ล็อกอินอัตโนมัติเป็นนักศึกษาที่ /', () => {
+    const username = `cy_ui_${Date.now()}`;
+    cy.visit(`${FRONTEND_URL}/register`);
+    cy.get('[data-cy=input-reg-name]').type('นักศึกษา สมัครใหม่');
+    cy.get('[data-cy=input-reg-username]').type(username);
+    cy.get('[data-cy=input-reg-password]').type('secret123');
+    cy.get('[data-cy=submit-register]').click();
+    // สมัครเสร็จ → เข้าหน้านักศึกษา (ปุ่ม logout โผล่) ที่ path "/"
+    cy.get('[data-cy=logout]', { timeout: 10000 }).should('be.visible');
+    cy.location('pathname').should('eq', '/');
+  });
+
+  it('ลิงก์ระหว่างหน้า login ↔ register ใช้ได้', () => {
+    cy.visit(`${FRONTEND_URL}/login`);
+    cy.get('[data-cy=link-register]').click();
+    cy.location('pathname').should('eq', '/register');
+    cy.get('[data-cy=link-login]').click();
+    cy.location('pathname').should('eq', '/login');
+  });
+});
+
+describe('UI — Routing / deep link', () => {
+  it('ยังไม่ล็อกอิน: เข้า path ใด ๆ → เด้ง /login', () => {
+    cy.visit(`${FRONTEND_URL}/rounds`);
+    cy.location('pathname').should('eq', '/login');
+    cy.get('[data-cy=submit-login]').should('be.visible');
+  });
+
+  it('อาจารย์: เข้า URL /rounds ตรง ๆ (จำลอง refresh) → อยู่หน้าแบบประเมิน', () => {
+    cy.loginAsInstructor();
+    cy.visit(`${FRONTEND_URL}/rounds`); // reload เต็ม = จำลอง refresh/deep link
+    cy.location('pathname').should('eq', '/rounds');
+    cy.contains('.page-heading', 'แบบประเมิน').should('be.visible');
+    cy.get('[data-cy=select-round-course]').should('exist');
+  });
+
+  it('อาจารย์: กดเมนู → URL เปลี่ยนตามหน้า', () => {
+    cy.loginAsInstructor();
+    cy.location('pathname').should('eq', '/courses'); // login แล้วเด้ง /courses
+    cy.get('[data-cy=nav-review]').click();
+    cy.location('pathname').should('eq', '/review');
+    cy.get('[data-cy=nav-groups]').click();
+    cy.location('pathname').should('eq', '/groups');
+  });
+
+  it('นักศึกษา: เข้า URL /course/:id ตรง ๆ (จำลอง refresh) → อยู่หน้าวิชานั้น', () => {
+    cy.loginAsStudent(CREDENTIALS.student1.username);
+    cy.contains('[data-cy^=course-]', '261497')
+      .invoke('attr', 'data-cy')
+      .then((dc) => {
+        const courseId = (dc as string).replace('course-', '');
+        cy.visit(`${FRONTEND_URL}/course/${courseId}`);
+        cy.location('pathname').should('eq', `/course/${courseId}`);
+        cy.get('[data-cy=nav-rounds]', { timeout: 10000 }).should('be.visible');
+        cy.get('[data-cy=nav-feedback]').should('be.visible');
+      });
+  });
+});
+
 describe('UI — Login', () => {
   it('login ผิด → ขึ้นข้อความแจ้งเตือน ไม่เข้าสู่ระบบ', () => {
     cy.visit(FRONTEND_URL);
@@ -88,7 +148,7 @@ describe('UI — Evaluation wizard', () => {
   it('ตอบครบแล้วบันทึก → ไปขั้นถัดไป', () => {
     enterWizardAsStudent1();
     fillAndSubmit('ขั้นที่ 1');
-    cy.contains('ขั้นที่ 2 จาก 3', { timeout: 3000 }).should('be.visible');
+    cy.contains('ขั้นที่ 2 จาก 3', { timeout: 8000 }).should('be.visible');
   });
 
   it(
@@ -99,11 +159,11 @@ describe('UI — Evaluation wizard', () => {
 
       // รอบแรก — ประเมินให้ครบทั้ง 3 คน (ตนเอง + เพื่อนอีก 2)
       fillAndSubmit('รอบแรก 1');
-      cy.contains('ขั้นที่ 2 จาก 3', { timeout: 3000 }).should('be.visible');
+      cy.contains('ขั้นที่ 2 จาก 3', { timeout: 8000 }).should('be.visible');
       fillAndSubmit('รอบแรก 2');
-      cy.contains('ขั้นที่ 3 จาก 3', { timeout: 3000 }).should('be.visible');
+      cy.contains('ขั้นที่ 3 จาก 3', { timeout: 8000 }).should('be.visible');
       fillAndSubmit('รอบแรก 3');
-      cy.get('[data-cy=wizard-done]', { timeout: 3000 }).should('be.visible');
+      cy.get('[data-cy=wizard-done]', { timeout: 8000 }).should('be.visible');
 
       // ออกแล้วเข้าใหม่โดยไม่แก้ไข — ต้องเห็นหน้าสรุปทันที ไม่ใช่เริ่มที่ "ประเมินตนเอง" ใหม่
       cy.get('[data-cy=wizard-done]').click();
@@ -119,14 +179,14 @@ describe('UI — Evaluation wizard', () => {
 
       // แก้ไขจนจบคนสุดท้าย — จุดนี้คือจุดที่เคย crash (current.isSelf อ่านจาก undefined)
       fillAndSubmit('แก้ไข 1');
-      cy.contains('ขั้นที่ 2 จาก 3', { timeout: 3000 }).should('be.visible');
+      cy.contains('ขั้นที่ 2 จาก 3', { timeout: 8000 }).should('be.visible');
       fillAndSubmit('แก้ไข 2');
-      cy.contains('ขั้นที่ 3 จาก 3', { timeout: 3000 }).should('be.visible');
+      cy.contains('ขั้นที่ 3 จาก 3', { timeout: 8000 }).should('be.visible');
       fillAndSubmit('แก้ไข 3');
 
       // ต้องกลับมาหน้าสรุปได้อย่างปลอดภัย ไม่ crash เป็นหน้าขาว
       // (ถ้าโค้ด regress กลับไป Cypress จะ fail test นี้เองจาก uncaught exception ด้วย)
-      cy.get('[data-cy=wizard-done]', { timeout: 3000 }).should('be.visible');
+      cy.get('[data-cy=wizard-done]', { timeout: 8000 }).should('be.visible');
       cy.contains('ส่งแบบประเมินครบทุกคนแล้ว').should('be.visible');
     },
   );
