@@ -1,247 +1,320 @@
-import {
-  BACKEND_URL,
-  FRONTEND_URL,
-  CREDENTIALS,
-  apiLogin,
-  authHeader,
-  setupOpenRound,
-  getMyGroup,
-  type OpenRoundFixture,
-} from '../support/testHelpers.js';
+// ทดสอบผ่านหน้าเว็บจริงใน browser — ทุกครั้งเริ่มจากข้อมูลตัวอย่างชุดเดียวกัน (db:prototype)
+// เลือกองค์ประกอบจากข้อความและ aria-label ที่ผู้ใช้เห็น จึงตรวจถ้อยคำบนหน้าจอไปด้วย
 
-describe('UI — Register', () => {
-  it('สมัครบัญชีใหม่ → ล็อกอินอัตโนมัติเป็นนักศึกษาที่ /', () => {
-    const username = `cy_ui_${Date.now()}`;
-    cy.visit(`${FRONTEND_URL}/register`);
-    cy.get('[data-cy=input-reg-name]').type('นักศึกษา สมัครใหม่');
-    cy.get('[data-cy=input-reg-username]').type(username);
-    cy.get('[data-cy=input-reg-password]').type('secret123');
-    cy.get('[data-cy=submit-register]').click();
-    // สมัครเสร็จ → เข้าหน้านักศึกษา (ปุ่ม logout โผล่) ที่ path "/"
-    cy.get('[data-cy=logout]', { timeout: 10000 }).should('be.visible');
-    cy.location('pathname').should('eq', '/');
+import { loadSeed, type Seed } from "../support/testHelpers";
+
+const COMMENT = "ทำงานส่วนของตัวเองได้ดีและส่งตรงเวลา";
+
+// หน้าจอกว้างมีเมนูซ้าย หน้าจอแคบมีเมนูล่าง — ใช้ชื่อเดียวกันทั้งคู่
+const mainNav = () => cy.get('nav[aria-label="เมนูหลัก"]').filter(":visible");
+const dialog = () => cy.get("dialog[open]");
+const stepIs = (n: number) => cy.contains(`ขั้นที่ ${n} จาก 7`).should("be.visible");
+const nextButton = () => cy.contains("button", /^(ถัดไป|ส่งแบบประเมิน)$/);
+
+// ให้คะแนนเดียวกันกับทุกคนในหน้าปัจจุบัน
+function rateEveryone(score: number) {
+  cy.get('[role="radiogroup"]').each(($group) => {
+    cy.wrap($group).contains("button", String(score)).click();
+  });
+}
+
+let seed: Seed;
+
+before(() => {
+  cy.resetDb();
+  loadSeed().then((s) => {
+    seed = s;
+  });
+  // cookie ที่ตั้งใน before ไม่ถูกล้างก่อนเทสต์ข้อแรก
+  cy.logout();
+});
+
+describe("UI — เข้าสู่ระบบและการนำทาง", () => {
+  it("ยังไม่เข้าสู่ระบบ: เปิดหน้าไหนก็ถูกพาไปหน้าเข้าสู่ระบบ", () => {
+    cy.visit("/courses");
+    cy.location("pathname").should("eq", "/login");
+    cy.contains("a", "เข้าสู่ระบบด้วยบัญชี CMU").should("have.attr", "href", "/api/auth/login");
   });
 
-  it('ลิงก์ระหว่างหน้า login ↔ register ใช้ได้', () => {
-    cy.visit(`${FRONTEND_URL}/login`);
-    cy.get('[data-cy=link-register]').click();
-    cy.location('pathname').should('eq', '/register');
-    cy.get('[data-cy=link-login]').click();
-    cy.location('pathname').should('eq', '/login');
+  it("เข้าสู่ระบบไม่สำเร็จ: แสดงเหตุผลตามรหัสข้อผิดพลาด", () => {
+    cy.visit("/login?error=account_type_not_allowed");
+    cy.contains("บัญชีประเภทนี้ใช้งานระบบไม่ได้").should("be.visible");
+  });
+
+  it("อาจารย์เห็นเมนูของอาจารย์ นักศึกษาเห็นสามเมนูของนักศึกษา", () => {
+    cy.loginAs("instructor");
+    cy.visit("/");
+    cy.location("pathname").should("eq", "/courses");
+    mainNav().should("contain", "คอร์สของฉัน").and("not.contain", "แบบประเมิน");
+
+    cy.loginAs("patiphan");
+    cy.visit("/");
+    cy.location("pathname").should("eq", "/assignments");
+    mainNav().should("contain", "แบบประเมิน").and("contain", "วิชาของฉัน").and("contain", "ฟีดแบ็ก").and("not.contain", "คอร์สของฉัน");
+  });
+
+  it("นักศึกษาเปิดหน้าของอาจารย์ไม่ได้", () => {
+    cy.loginAs("patiphan");
+    cy.visit(`/courses/${seed.course.id}/rounds`);
+    cy.location("pathname").should("eq", "/assignments");
+  });
+
+  it("ออกจากระบบจากเมนู แล้วกลับไปหน้าเข้าสู่ระบบ", () => {
+    cy.loginAs("patiphan");
+    cy.visit("/assignments");
+    cy.get('button[aria-label="ออกจากระบบ"]').filter(":visible").click();
+    cy.location("pathname").should("eq", "/login");
+    cy.visit("/assignments");
+    cy.location("pathname").should("eq", "/login");
   });
 });
 
-describe('UI — Routing / deep link', () => {
-  it('ยังไม่ล็อกอิน: เข้า path ใด ๆ → เด้ง /login', () => {
-    cy.visit(`${FRONTEND_URL}/rounds`);
-    cy.location('pathname').should('eq', '/login');
-    cy.get('[data-cy=submit-login]').should('be.visible');
+describe("UI — นักศึกษา", () => {
+  it("นักศึกษาที่ยังไม่ยอมรับนโยบายต้องยอมรับก่อนจึงเข้าใช้งานได้", () => {
+    cy.loginAs("thanapon");
+    cy.visit("/assignments");
+    cy.location("pathname").should("eq", "/consent");
+    cy.contains("h1", "ก่อนเริ่มใช้งาน").should("be.visible");
+
+    cy.contains("button", "ยอมรับและเริ่มใช้งาน").should("be.disabled");
+    cy.get('input[type="checkbox"]').check({ force: true });
+    cy.contains("button", "ยอมรับและเริ่มใช้งาน").click();
+    cy.location("pathname").should("eq", "/assignments");
   });
 
-  it('อาจารย์: เข้า URL /rounds ตรง ๆ (จำลอง refresh) → อยู่หน้าแบบประเมิน', () => {
-    cy.loginAsInstructor();
-    cy.visit(`${FRONTEND_URL}/rounds`); // reload เต็ม = จำลอง refresh/deep link
-    cy.location('pathname').should('eq', '/rounds');
-    cy.contains('.page-heading', 'แบบประเมิน').should('be.visible');
-    cy.get('[data-cy=select-round-course]').should('exist');
+  it("เลือกกลุ่ม: กลุ่มที่เต็มถูกพับไว้ เข้ากลุ่มแล้วต้องยอมรับข้อตกลง", () => {
+    cy.loginAs("patiphan");
+    cy.visit(`/courses/${seed.course.id}`);
+    cy.contains("h2", "เลือกกลุ่มของคุณ").should("be.visible");
+
+    // Cypress มองเนื้อหาใน <details> ที่พับอยู่ว่ายังมองเห็น จึงตรวจจากสถานะเปิด/ปิดของ <details> แทน
+    cy.contains("summary", "กลุ่มที่เต็มแล้ว 3 กลุ่ม").parent("details").as("full").should("not.have.attr", "open");
+    cy.contains("summary", "กลุ่มที่เต็มแล้ว 3 กลุ่ม").click();
+    cy.get("@full").should("have.attr", "open");
+    cy.get("@full").contains("li", "Team Gamma").should("be.visible").find("button").should("not.exist");
+
+    cy.contains("li", "Team Alpha").contains("button", "เข้ากลุ่ม").click();
+    cy.contains("h2", "ข้อตกลงของ Team Alpha").should("be.visible");
+    cy.contains("button", "ยอมรับข้อตกลง").click();
+
+    cy.contains("h2", "ข้อตกลงของ Team Alpha").should("not.exist");
+    cy.contains("li", "(คุณ)").should("contain", "ปฏิพันธ์ เลขนอก");
+    cy.contains("button", "ออกจากกลุ่ม").should("be.visible");
+    // กำหนดการรอบ: รอบที่เปิดอยู่มีปุ่มไปทำแบบประเมิน
+    cy.contains("li", "รอบที่ 3").contains("a", "ทำแบบประเมิน").should("be.visible");
   });
 
-  it('อาจารย์: กดเมนู → URL เปลี่ยนตามหน้า', () => {
-    cy.loginAsInstructor();
-    cy.location('pathname').should('eq', '/courses'); // login แล้วเด้ง /courses
-    cy.get('[data-cy=nav-review]').click();
-    cy.location('pathname').should('eq', '/review');
-    cy.get('[data-cy=nav-groups]').click();
-    cy.location('pathname').should('eq', '/groups');
-  });
-
-  it('นักศึกษา: เข้า URL /course/:id ตรง ๆ (จำลอง refresh) → อยู่หน้าวิชานั้น', () => {
-    cy.loginAsStudent(CREDENTIALS.student1.username);
-    cy.contains('[data-cy^=course-]', '261497')
-      .invoke('attr', 'data-cy')
-      .then((dc) => {
-        const courseId = (dc as string).replace('course-', '');
-        cy.visit(`${FRONTEND_URL}/course/${courseId}`);
-        cy.location('pathname').should('eq', `/course/${courseId}`);
-        cy.get('[data-cy=nav-rounds]', { timeout: 10000 }).should('be.visible');
-        cy.get('[data-cy=nav-feedback]').should('be.visible');
-      });
-  });
-});
-
-describe('UI — Login', () => {
-  it('login ผิด → ขึ้นข้อความแจ้งเตือน ไม่เข้าสู่ระบบ', () => {
-    cy.visit(FRONTEND_URL);
-    cy.get('[data-cy=input-username]').type(CREDENTIALS.student1.username);
-    cy.get('[data-cy=input-password]').type('wrong-password');
-    cy.get('[data-cy=submit-login]').click();
-
-    // getErrorMessage() แปลข้อความจาก backend มาแสดงใน <p className="status-toast">
-    cy.get('.status-toast').should('be.visible').invoke('text').should('not.be.empty');
-    cy.get('[data-cy=logout]').should('not.exist');
-  });
-});
-
-describe('UI — Role-based navigation', () => {
-  it('นักศึกษาเห็นเมนูฝั่งนักศึกษา ไม่เห็นเมนูฝั่งอาจารย์', () => {
-    cy.loginAsStudent(CREDENTIALS.student1.username);
-    // nav (sidebar) ของนักศึกษาจะโผล่ก็ต่อเมื่อเข้าไปในวิชาแล้วเท่านั้น (CourseDetailView)
-    cy.contains('[data-cy^=course-]', '261497').click();
-
-    cy.get('[data-cy=nav-rounds]').should('be.visible');
-    cy.get('[data-cy=nav-feedback]').should('be.visible');
-    cy.get('[data-cy=nav-courses]').should('not.exist');
-    cy.get('[data-cy=nav-groups]').should('not.exist');
-    cy.get('[data-cy=nav-review]').should('not.exist');
-  });
-
-  it('อาจารย์เห็นเมนูฝั่งอาจารย์ ไม่เห็นเมนูฝั่งนักศึกษา', () => {
-    cy.loginAsInstructor();
-
-    cy.get('[data-cy=nav-courses]').should('be.visible');
-    cy.get('[data-cy=nav-groups]').should('be.visible');
-    cy.get('[data-cy=nav-rounds]').should('be.visible');
-    cy.get('[data-cy=nav-review]').should('be.visible');
-    // "feedback" เป็น nav key เฉพาะฝั่งนักศึกษา ไม่มีในเมนูอาจารย์
-    cy.get('[data-cy=nav-feedback]').should('not.exist');
-  });
-});
-
-describe('UI — Evaluation wizard', () => {
-  let fixture: OpenRoundFixture;
-
-  beforeEach(() => {
-    // สร้างรอบใหม่ทุก test — กัน state ค้างข้ามกันและกัน unique constraint ตอนรันซ้ำ
-    setupOpenRound().then((f) => {
-      fixture = f;
+  it("หน้าแบบประเมินแยกงานที่ต้องทำกับที่ส่งแล้ว", () => {
+    cy.loginAs("wirat");
+    cy.visit("/assignments");
+    cy.contains("section", "ต้องทำ").within(() => {
+      cy.contains("รอบที่ 3").should("be.visible");
+      cy.contains("a", "เริ่มประเมิน").should("be.visible");
     });
+
+    cy.loginAs("napat");
+    cy.visit("/assignments");
+    cy.contains("section", "ส่งแล้ว").should("contain", "รอบที่ 3");
+    cy.contains("a", "เริ่มประเมิน").should("not.exist");
   });
 
-  function enterWizardAsStudent1() {
-    cy.loginAsStudent(CREDENTIALS.student1.username);
-    cy.contains('[data-cy^=course-]', '261497').click();
-    cy.get(`[data-cy=enter-round-${fixture.roundId}]`).click();
-  }
+  it("ส่งโดยยังตอบไม่ครบ: บอกขั้นที่ขาดและพากลับไปขั้นนั้น แบบร่างที่บันทึกไว้ทำต่อได้", () => {
+    cy.loginAs("kanya");
+    cy.visit(`/courses/${seed.course.id}/rounds/${seed.rounds.open}/evaluate?q=7`);
+    stepIs(7);
+    cy.contains("button", "ส่งแบบประเมิน").click();
+    cy.contains("ยังตอบไม่ครบ").should("be.visible");
+    stepIs(1);
 
-  function fillAndSubmit(label: string) {
-    const scaleId = fixture.questions.find((q) => q.type === 'scale')!.id;
-    const textId = fixture.questions.find((q) => q.type === 'text')!.id;
-    cy.get(`[data-cy=scale-${scaleId}]`).contains('button', '4').click();
-    cy.get(`[data-cy=text-${textId}]`).clear().type(`คำตอบ ${label}`);
-    cy.get('[data-cy=submit-step]').click();
-  }
+    rateEveryone(5);
+    cy.contains("button", "บันทึกและออก").click();
+    cy.location("pathname").should("eq", `/courses/${seed.course.id}`);
 
-  it('เข้ารอบประเมิน → ขั้นแรกต้องเป็น "ประเมินตนเอง" เสมอ', () => {
-    enterWizardAsStudent1();
-    cy.contains('h4', 'ประเมินตนเอง').should('be.visible');
-    cy.contains('ขั้นที่ 1 จาก 3').should('be.visible');
+    cy.visit("/assignments");
+    cy.contains("ตอบแล้ว 4 จาก 28 ช่อง").should("be.visible");
+    cy.contains("a", "ทำต่อ").should("be.visible");
   });
 
-  it('ตอบไม่ครบแล้วกดบันทึก → ขึ้นเตือน ไม่ไปขั้นถัดไป', () => {
-    enterWizardAsStudent1();
-    cy.get('[data-cy=submit-step]').click();
-    cy.get('.status-toast').should('be.visible').and('contain', 'กรุณาตอบ');
-    // ยังต้องอยู่ขั้นที่ 1 เหมือนเดิม แปลว่าไม่มีการส่งข้อมูลออกไป
-    cy.contains('ขั้นที่ 1 จาก 3').should('be.visible');
+  it("ทำแบบประเมินครบทุกขั้นและส่ง: 5 ด้านคะแนน ความเห็น ทบทวน ยืนยัน", () => {
+    cy.loginAs("wirat");
+    cy.visit("/assignments");
+    cy.contains("a", "เริ่มประเมิน").click();
+
+    // หน้าแรกของรอบสรุปว่าต้องทำอะไร
+    cy.contains("3 คน + ตัวเอง").should("be.visible");
+    cy.contains("7 คำถาม").should("be.visible");
+    cy.contains("a", "เริ่มประเมิน").click();
+
+    for (let step = 1; step <= 5; step++) {
+      stepIs(step);
+      cy.get('[role="radiogroup"]').should("have.length", 4);
+      rateEveryone(4);
+      nextButton().click();
+    }
+
+    stepIs(6);
+    cy.get("textarea").should("have.length", 8).each(($field) => {
+      cy.wrap($field).type(COMMENT, { delay: 0 });
+    });
+    // ออกจากหน้าความเห็น = บันทึกพร้อมส่งให้ระบบตรวจข้อความ
+    // ถ้าถูกเตือนให้ยืนยันส่งตามเดิมทุกข้อแล้วไปต่อ — เทสต์จึงผ่านทั้งตอนเปิดและปิด AI_PROVIDER
+    cy.intercept("PUT", "**/api/answers/*/draft").as("check");
+    nextButton().click();
+    cy.wait("@check", { timeout: 20000 }).then(({ response }) => {
+      const warned: number = response!.body.data.warnings.length;
+      if (warned === 0) return;
+      for (let i = 0; i < warned; i++) cy.contains("button", "ส่งตามนี้").click();
+      nextButton().click();
+    });
+
+    stepIs(7);
+    cy.contains("ตรวจคำตอบอีกครั้ง ส่งแล้วจะแก้ไขไม่ได้").should("be.visible");
+    cy.contains("ยังไม่ให้").should("not.exist");
+    nextButton().click();
+    dialog().should("contain", "ส่งแบบประเมิน?").contains("button", "ส่งแบบประเมิน").click();
+
+    cy.contains("h1", "ส่งเรียบร้อยแล้ว", { timeout: 20000 }).should("be.visible");
+    cy.visit("/assignments");
+    cy.contains("section", "ส่งแล้ว").should("contain", "รอบที่ 3");
   });
 
-  it('ตอบครบแล้วบันทึก → ไปขั้นถัดไป', () => {
-    enterWizardAsStudent1();
-    fillAndSubmit('ขั้นที่ 1');
-    cy.contains('ขั้นที่ 2 จาก 3', { timeout: 8000 }).should('be.visible');
+  it("ผลที่เผยแพร่แล้ว: เห็นคะแนน ความเห็น และฟีดแบ็กจากอาจารย์ โดยไม่มีชื่อเพื่อน", () => {
+    cy.loginAs("napat");
+    cy.visit("/feedback");
+    cy.contains("รอบที่ 1").should("be.visible");
+    cy.contains("a", "ดูผลประเมิน").click();
+    cy.location("pathname").should("eq", `/feedback/${seed.rounds.released}`);
+
+    cy.contains("คะแนนรายด้าน").should("be.visible");
+    cy.contains("เพื่อน (3 คน)").should("be.visible");
+    cy.contains("ฟีดแบ็กจากอาจารย์").parent().parent().should("contain", "ทำงานได้สม่ำเสมอ").and("contain", "วิชัย ตันติวัฒนกุล");
+
+    for (const peer of seed.groups.gamma.members.filter((m) => m.id !== seed.ids.napat))
+      cy.get("body").should("not.contain", peer.name);
   });
 
-  it(
-    'ประเมินครบทุกคน → แก้ไขคำตอบจนจบ → ออก → เข้าใหม่ ต้องเห็นหน้าสรุปเสมอ ' +
-      '(regression: current.isSelf บน step ที่เกินขอบตอนบันทึกคนสุดท้ายในโหมดแก้ไข)',
-    () => {
-      enterWizardAsStudent1();
+  it("เพื่อนประเมินไม่ถึง 2 คน: ผลถูกซ่อนพร้อมเหตุผล", () => {
+    cy.loginAs("somchai");
+    cy.visit(`/feedback/${seed.rounds.released}`);
+    cy.contains("ผู้ประเมินไม่พอสำหรับแสดงผลแบบไม่ระบุชื่อ").should("be.visible");
+    cy.contains("คะแนนรายด้าน").should("not.exist");
+  });
 
-      // รอบแรก — ประเมินให้ครบทั้ง 3 คน (ตนเอง + เพื่อนอีก 2)
-      fillAndSubmit('รอบแรก 1');
-      cy.contains('ขั้นที่ 2 จาก 3', { timeout: 8000 }).should('be.visible');
-      fillAndSubmit('รอบแรก 2');
-      cy.contains('ขั้นที่ 3 จาก 3', { timeout: 8000 }).should('be.visible');
-      fillAndSubmit('รอบแรก 3');
-      cy.get('[data-cy=wizard-done]', { timeout: 8000 }).should('be.visible');
-
-      // ออกแล้วเข้าใหม่โดยไม่แก้ไข — ต้องเห็นหน้าสรุปทันที ไม่ใช่เริ่มที่ "ประเมินตนเอง" ใหม่
-      cy.get('[data-cy=wizard-done]').click();
-      cy.get(`[data-cy=enter-round-${fixture.roundId}]`).click();
-      cy.contains('ส่งแบบประเมินครบทุกคนแล้ว').should('be.visible');
-      cy.contains('h4', 'ประเมินตนเอง').should('not.exist');
-
-      // กด "แก้ไขคำตอบ" → ต้องกลับไปขั้นที่ 1 (ประเมินตนเอง) เสมอ
-      cy.get('[data-cy=wizard-edit]').click();
-      cy.contains('h4', 'ประเมินตนเอง').should('be.visible');
-      cy.contains('ขั้นที่ 1 จาก 3').should('be.visible');
-      cy.contains('โหมดแก้ไข').should('be.visible');
-
-      // แก้ไขจนจบคนสุดท้าย — จุดนี้คือจุดที่เคย crash (current.isSelf อ่านจาก undefined)
-      fillAndSubmit('แก้ไข 1');
-      cy.contains('ขั้นที่ 2 จาก 3', { timeout: 8000 }).should('be.visible');
-      fillAndSubmit('แก้ไข 2');
-      cy.contains('ขั้นที่ 3 จาก 3', { timeout: 8000 }).should('be.visible');
-      fillAndSubmit('แก้ไข 3');
-
-      // ต้องกลับมาหน้าสรุปได้อย่างปลอดภัย ไม่ crash เป็นหน้าขาว
-      // (ถ้าโค้ด regress กลับไป Cypress จะ fail test นี้เองจาก uncaught exception ด้วย)
-      cy.get('[data-cy=wizard-done]', { timeout: 8000 }).should('be.visible');
-      cy.contains('ส่งแบบประเมินครบทุกคนแล้ว').should('be.visible');
-    },
-  );
+  it("รอบที่ยังไม่เผยแพร่: บอกว่ารออาจารย์เผยแพร่ผล", () => {
+    cy.loginAs("napat");
+    cy.visit(`/feedback/${seed.rounds.closed}`);
+    cy.contains("h1", "ผลประเมินยังไม่พร้อม").should("be.visible");
+    cy.contains("อาจารย์เผยแพร่ผล").should("be.visible");
+    cy.contains("คะแนนรายด้าน").should("not.exist");
+  });
 });
 
-describe('UI — Psychological safety on feedback page', () => {
-  it('หน้าฟีดแบ็กนักศึกษาต้องไม่แสดงข้อความดิบหรือชื่อผู้ประเมิน', () => {
-    const rawMarker = `RAW_MARKER_${Date.now()}`;
-    const summaryMarker = `SUMMARY_MARKER_${Date.now()}`;
+describe("UI — อาจารย์", () => {
+  const course = () => `/courses/${seed.course.id}`;
 
-    setupOpenRound().then((fixture) =>
-      apiLogin(CREDENTIALS.student2.username, CREDENTIALS.student2.password).then((evaluator) =>
-        apiLogin(CREDENTIALS.student1.username, CREDENTIALS.student1.password).then((evaluatee) =>
-          getMyGroup(evaluator.token, fixture.courseId).then((group) => {
-            const textId = fixture.questions.find((q) => q.type === 'text')!.id;
+  it("เข้าวิชาจากรายการ: ภาพรวมเปิดที่รอบล่าสุดที่ปิดแล้ว และกรองตามกลุ่มได้", () => {
+    cy.loginAs("instructor");
+    cy.visit("/courses");
+    cy.contains("h2", "Software Engineering").should("be.visible");
+    cy.contains("h2", "Fullstack Development").click();
+    cy.location("pathname").should("eq", course());
 
-            // เพื่อน (student2) ให้ raw feedback ที่มี marker เฉพาะ
-            return cy
-              .request({
-                method: 'POST',
-                url: `${BACKEND_URL}/answers`,
-                headers: authHeader(evaluator.token),
-                body: {
-                  roundId: fixture.roundId,
-                  groupId: group.id,
-                  evaluateeId: evaluatee.user.id,
-                  answers: [{ questionId: textId, textValue: rawMarker }],
-                },
-              })
-              .then(() =>
-                // อาจารย์เขียนสรุปข้อความคนละอันแล้วเผยแพร่
-                cy.request({
-                  method: 'POST',
-                  url: `${BACKEND_URL}/feedback`,
-                  headers: authHeader(fixture.instructorToken),
-                  body: {
-                    roundId: fixture.roundId,
-                    studentId: evaluatee.user.id,
-                    summary: summaryMarker,
-                    isPublished: true,
-                  },
-                }),
-              )
-              .then(() => {
-                cy.loginAsStudent(CREDENTIALS.student1.username);
-                cy.contains('[data-cy^=course-]', '261497').click();
-                cy.get('[data-cy=nav-feedback]').click();
+    cy.get('select[aria-label="รอบประเมิน"]').should("have.value", seed.rounds.closed);
+    cy.contains("a", "ยังไม่ได้เผยแพร่ผล").should("be.visible");
+    mainNav().should("contain", "ภาพรวม").and("contain", "สมาชิก").and("contain", "รอบประเมิน").and("contain", "ฟีดแบ็ก");
 
-                cy.contains(summaryMarker).should('be.visible');
-                cy.get('body').should('not.contain', rawMarker);
-                cy.get('body').should('not.contain', evaluator.user.name);
-              });
-          }),
-        ),
-      ),
-    );
+    cy.get('section[aria-label="คะแนนรายคน"]').as("scores").should("contain", "ณภัทร แสงทอง").and("contain", "อนันต์ ทองดี");
+    cy.get('nav[aria-label="กรองตามกลุ่ม"]').contains("a", "Team Delta").click();
+    cy.location("search").should("include", `group=${seed.groups.delta.id}`);
+    cy.get("@scores").should("contain", "อนันต์ ทองดี").and("not.contain", "ณภัทร แสงทอง");
+  });
+
+  it("เปิดรายละเอียดนักศึกษา: เห็นคะแนนรายผู้ประเมิน แล้วไปหน้าเขียนฟีดแบ็กของคนนั้น", () => {
+    cy.loginAs("instructor");
+    cy.visit(`${course()}?round=${seed.rounds.closed}`);
+    cy.get('section[aria-label="คะแนนรายคน"]').contains("button", "วิรัช คงมั่น").click();
+
+    dialog().within(() => {
+      cy.contains("h2", "วิรัช คงมั่น").should("be.visible");
+      cy.contains("คะแนนที่ได้รับ").should("be.visible");
+      cy.get("textarea").should("not.exist");
+      cy.contains("a", "เขียนที่หน้าฟีดแบ็ก").click();
+    });
+
+    cy.location("pathname").should("eq", `${course()}/feedback`);
+    cy.location("search").should("include", `student=${seed.ids.wirat}`);
+    cy.contains("h3", "วิรัช คงมั่น").should("be.visible");
+  });
+
+  it("เขียนฟีดแบ็ก: เตือนเมื่อเปลี่ยนคนโดยยังไม่บันทึก บันทึกแล้วนักศึกษาเห็นในหน้าผลของตัวเอง", () => {
+    const text = "รอบนี้ช่วยรีวิวงานของเพื่อนได้ละเอียด";
+    cy.loginAs("instructor");
+    cy.visit(`${course()}/feedback?round=${seed.rounds.released}`);
+    cy.contains("เขียนแล้ว 4 จาก 17 คน").should("be.visible");
+    cy.contains("เผยแพร่ฟีดแบ็กแล้ว นักศึกษาเห็นทันทีที่บันทึก").should("be.visible");
+    cy.contains("button", "AI ร่างฟีดแบ็กทั้งหมด").should("be.disabled");
+
+    cy.get('nav[aria-label="นักศึกษา"]').as("students").contains("button", "วิรัช คงมั่น").click();
+    cy.contains("h3", "วิรัช คงมั่น").should("be.visible");
+    cy.get("#instructor-note").should("have.value", "").type(text, { delay: 0 });
+
+    cy.get("@students").contains("button", "ณภัทร แสงทอง").click();
+    dialog().should("contain", "ยังไม่ได้บันทึกฟีดแบ็ก").contains("button", "ยกเลิก").click();
+    cy.contains("h3", "วิรัช คงมั่น").should("be.visible");
+    cy.get("#instructor-note").should("have.value", text);
+
+    cy.contains("button", /^บันทึก$/).click();
+    cy.contains("เขียนแล้ว 5 จาก 17 คน").should("be.visible");
+    cy.get("@students").contains("button", "วิรัช คงมั่น").find('[aria-label="เขียนแล้ว"]').should("exist");
+
+    cy.loginAs("wirat");
+    cy.visit(`/feedback/${seed.rounds.released}`);
+    cy.contains(text).should("be.visible");
+  });
+
+  it("เผยแพร่คะแนนจากหน้ารอบประเมิน: ถามยืนยันก่อน แล้วนักศึกษาเห็นคะแนนแต่ยังไม่เห็นความเห็น", () => {
+    cy.loginAs("instructor");
+    cy.visit(`${course()}/rounds`);
+    cy.contains("tr", "รอบที่ 2").as("round2").should("contain", "ปิดรับแล้ว");
+    cy.get('button[aria-label="เผยแพร่คะแนนรอบที่ 3"]').should("be.disabled");
+
+    cy.get('button[aria-label="เผยแพร่คะแนนรอบที่ 2"]').should("have.attr", "aria-checked", "false").click();
+    dialog().should("contain", "เผยแพร่คะแนนรอบที่ 2?").contains("button", /^เผยแพร่$/).click();
+    cy.get('button[aria-label="เผยแพร่คะแนนรอบที่ 2"]').should("have.attr", "aria-checked", "true");
+    cy.get("@round2").should("contain", "เผยแพร่ผลแล้ว");
+
+    cy.loginAs("napat");
+    cy.visit(`/feedback/${seed.rounds.closed}`);
+    cy.contains("คะแนนรายด้าน").should("be.visible");
+    cy.contains("อาจารย์ยังไม่ได้เผยแพร่ความเห็นจากเพื่อนของรอบนี้").should("be.visible");
+  });
+
+  it("หน้าสมาชิก: ค้นหานักศึกษาด้วยชื่อ", () => {
+    cy.loginAs("instructor");
+    cy.visit(`${course()}/members`);
+    cy.contains("td", "สมชาย ใจดี").should("be.visible");
+    cy.get('input[aria-label="ค้นหานักศึกษา"]').type("กัญญา");
+    cy.contains("td", "กัญญา ศรีวงศ์").should("be.visible");
+    cy.contains("td", "สมชาย ใจดี").should("not.exist");
+  });
+
+  it("สร้างคอร์สใหม่: ตรวจข้อมูลในฟอร์ม แล้วคอร์สใหม่ขึ้นในรายการ", () => {
+    cy.loginAs("instructor");
+    cy.visit("/courses");
+    cy.contains("button", "สร้างคอร์สใหม่").click();
+
+    dialog().within(() => {
+      cy.get("#courseCode").type("2612");
+      cy.contains("button", "สร้างคอร์ส").click();
+      cy.get("#courseCode").should("have.attr", "aria-invalid", "true");
+
+      cy.get("#courseCode").clear().type("261222");
+      cy.get("#section").type("801");
+      cy.get("#title").type("Cypress UI Course");
+      cy.contains("button", "สร้างคอร์ส").click();
+    });
+
+    dialog().should("not.exist");
+    cy.contains("h2", "Cypress UI Course").should("be.visible");
   });
 });
