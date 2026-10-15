@@ -2,152 +2,118 @@
 // ไม่ใช่ custom command (ตามที่โจทย์ระบุให้ custom command อยู่ใน e2e.ts เท่านั้น)
 // เป็นฟังก์ชันธรรมดาที่คืน Cypress.Chainable ไว้ประกอบ .then() ต่อ
 
-export const BACKEND_URL = Cypress.expose('BACKEND_URL') as string;
-export const FRONTEND_URL = Cypress.expose('FRONTEND_URL') as string;
+export const BACKEND_URL = Cypress.expose("BACKEND_URL") as string;
+export const FRONTEND_URL = Cypress.expose("FRONTEND_URL") as string;
 
-export const CREDENTIALS = {
-  instructor: { username: 'ajarn.nirand', password: 'password123' },
-  student1: { username: '6511500001', password: 'password123' },
-  student2: { username: '6511500002', password: 'password123' },
-  student3: { username: '6511500003', password: 'password123' },
-};
+// บัญชีจาก Database/db/prototype.ts — บทบาทของแต่ละคนในข้อมูลตัวอย่างเขียนกำกับไว้
+export const ACCOUNTS = {
+  instructor: "wichai.t@cmu.ac.th",
+  // 261497: ยังไม่มีกลุ่ม / 261492: Team Orion, รอบ 1 เผยแพร่แล้ว, รอบ 2 เปิดอยู่
+  patiphan: "patiphan_leknok@cmu.ac.th",
+  // Alpha: รอบ 1 มีเพื่อนประเมินคนเดียว ผลจึงถูกซ่อน, ไม่ได้เรียน 261492
+  somchai: "somchai_jaidee@cmu.ac.th",
+  // Alpha: ยังไม่เคยยอมรับนโยบายความเป็นส่วนตัว
+  thanapon: "thanapon_meesuk@cmu.ac.th",
+  // Beta: ยังไม่ยอมรับข้อตกลงกลุ่ม
+  malee: "malee_srisuk@cmu.ac.th",
+  // Gamma (4 คน เต็ม): รอบ 1 เพื่อนประเมินครบ 3 คน, ส่งรอบ 3 แล้ว, มีฟีดแบ็กจากอาจารย์ในรอบ 1
+  napat: "napat_saengthong@cmu.ac.th",
+  // Gamma: ยังไม่ได้ทำรอบ 3, ไม่มีฟีดแบ็กจากอาจารย์
+  wirat: "wirat_kongman@cmu.ac.th",
+  // Gamma: ยังไม่ได้ทำรอบ 3 เหมือน wirat — ใช้กับเทสต์ที่ต้องเริ่มจากฟอร์มว่าง
+  kanya: "kanya_sriwong@cmu.ac.th",
+  // Delta: ให้เพื่อนทุกคน 5 เท่ากันทุกข้อในรอบ 1
+  anan: "anan_thongdee@cmu.ac.th",
+  // Epsilon: มีฟีดแบ็กจากอาจารย์ในรอบ 1
+  chaiwat: "chaiwat_promma@cmu.ac.th",
+} as const;
 
-export interface LoginResult {
-  token: string;
-  user: { id: string; username: string; name: string; role: string };
+export type AccountKey = keyof typeof ACCOUNTS;
+
+export type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+/** เรียก backend ด้วย cookie ของบัญชีที่ loginAs ไว้ — ไม่ล้มเมื่อได้ 4xx เพื่อให้ตรวจสถานะเองได้ */
+export function api<T = any>(method: Method, path: string, body?: unknown): Cypress.Chainable<Cypress.Response<T>> {
+  return cy.request<T>({ method, url: `${BACKEND_URL}${path}`, body: body as Cypress.RequestBody, failOnStatusCode: false });
 }
 
-export function apiLogin(username: string, password: string): Cypress.Chainable<LoginResult> {
-  return cy
-    .request('POST', `${BACKEND_URL}/auth/login`, { username, password })
-    .then((res) => res.body.data as LoginResult) as unknown as Cypress.Chainable<LoginResult>;
-}
-
-export function authHeader(token: string) {
-  return { Authorization: `Bearer ${token}` };
-}
-
-export interface RoundQuestion {
-  id: string;
-  content: string;
-  type: 'scale' | 'text';
-  sortOrder: number;
-}
-
-export interface OpenRoundFixture {
-  instructorToken: string;
-  courseId: string;
-  roundId: string;
-  questions: RoundQuestion[];
-}
-
-/**
- * สร้างรอบประเมินใหม่ที่เปิดอยู่ในวิชา 261497 พร้อมคำถาม scale 1 ข้อ + text 1 ข้อ
- * ใช้ชื่อรอบที่มี timestamp กันชนกับรอบเดิม/รอบที่ test อื่นสร้างไว้
- * ไม่แตะ seed data เดิมเลย (ไม่สร้าง course/user/group ใหม่) จึงรันซ้ำได้เรื่อย ๆ
- * โดยไม่ต้อง reset DB — ไม่มี endpoint ลบ round ในระบบ รอบทดสอบจะค้างอยู่แบบเปิดต่อไป
- * (ไม่กระทบความถูกต้องของ test เพราะแต่ละรอบมี roundId/questionId ใหม่เสมอ)
- */
-export function setupOpenRound(courseCode = '261497'): Cypress.Chainable<OpenRoundFixture> {
-  return apiLogin(CREDENTIALS.instructor.username, CREDENTIALS.instructor.password).then((instructor) =>
-    cy
-      .request({ url: `${BACKEND_URL}/courses`, headers: authHeader(instructor.token) })
-      .then((coursesRes) => {
-        const course = (coursesRes.body.data as { id: string; courseCode: string }[]).find(
-          (c) => c.courseCode === courseCode,
-        );
-        if (!course) throw new Error(`ไม่พบวิชา ${courseCode} ใน seed data — ตรวจ Database/db/prototype.ts`);
-
-        return cy
-          .request({
-            method: 'POST',
-            url: `${BACKEND_URL}/rounds`,
-            headers: authHeader(instructor.token),
-            body: { courseId: course.id, name: `Cypress Test ${Date.now()}` },
-          })
-          .then((roundRes) => {
-            const roundId = roundRes.body.data.id as string;
-
-            return cy
-              .request({
-                method: 'POST',
-                url: `${BACKEND_URL}/rounds/${roundId}/questions`,
-                headers: authHeader(instructor.token),
-                body: [
-                  { content: 'การมีส่วนร่วม (Cypress scale)', type: 'scale', sortOrder: 1 },
-                  { content: 'ข้อเสนอแนะ (Cypress text)', type: 'text', sortOrder: 2 },
-                ],
-              })
-              .then((questionsRes) =>
-                cy
-                  .request({
-                    method: 'PATCH',
-                    url: `${BACKEND_URL}/rounds/${roundId}/open`,
-                    headers: authHeader(instructor.token),
-                    body: { isOpen: true },
-                  })
-                  .then(
-                    () =>
-                      ({
-                        instructorToken: instructor.token,
-                        courseId: course.id,
-                        roundId,
-                        questions: questionsRes.body.data as RoundQuestion[],
-                      }) as OpenRoundFixture,
-                  ),
-              );
-          });
-      }),
-  ) as unknown as Cypress.Chainable<OpenRoundFixture>;
-}
-
-export interface GroupMember {
+export interface Member {
   id: string;
   name: string;
-  username: string;
 }
 
-export interface Group {
-  id: string;
-  name: string;
-  members: GroupMember[];
+export interface Seed {
+  course: { id: string };
+  /** วิชาที่สอง 261492 */
+  course2: { id: string };
+  /** รอบของ 261497: เผยแพร่แล้ว / ปิดรับแล้ว / เปิดรับ */
+  rounds: { released: string; closed: string; open: string };
+  /** รอบของ 261492: เผยแพร่แล้ว / เปิดรับ */
+  rounds2: { released: string; open: string };
+  groups: Record<"alpha" | "beta" | "gamma" | "delta" | "epsilon", { id: string; members: Member[] }>;
+  /** id ของนักศึกษาตามชื่อบัญชีใน ACCOUNTS */
+  ids: Record<Exclude<AccountKey, "instructor">, string>;
 }
 
-export function getMyGroup(studentToken: string, courseId: string): Cypress.Chainable<Group> {
-  return cy
-    .request({ url: `${BACKEND_URL}/groups/my?courseId=${courseId}`, headers: authHeader(studentToken) })
-    .then((res) => res.body.data as Group) as unknown as Cypress.Chainable<Group>;
-}
+/** อ่าน id ของข้อมูลตัวอย่างผ่าน API ของอาจารย์ — เรียกใน before() หลัง resetDb */
+export function loadSeed(): Cypress.Chainable<Seed> {
+  const seed = {} as Seed;
+  cy.loginAs("instructor");
 
-/** เหมือน setupOpenRound แต่ปิดรอบทันทีหลังสร้าง — ไว้ทดสอบกฎ "รอบต้องเปิดถึงจะตอบได้" */
-export function setupClosedRound(
-  courseCode = '261497'
-): Cypress.Chainable<OpenRoundFixture> {
-  return setupOpenRound(courseCode).then((fixture) =>
-    // ต้อง return cy chain (ไม่ใช่ queue แล้ว return ค่า) ไม่งั้น PATCH ปิดรอบจะไม่ถูก sequence
-    cy
-      .request({
-        method: 'PATCH',
-        url: `${BACKEND_URL}/rounds/${fixture.roundId}/open`,
-        headers: authHeader(fixture.instructorToken),
-        body: { isOpen: false },
-      })
-      .then(() => fixture)
-  ) as unknown as Cypress.Chainable<OpenRoundFixture>;
-}
+  api("GET", "/courses").then((res) => {
+    const byCode = (code: string) => res.body.data.find((c: { courseCode: string }) => c.courseCode === code);
+    seed.course = { id: byCode("261497").id };
+    seed.course2 = { id: byCode("261492").id };
+  });
 
-/** หา courseId จาก courseCode (ต้องมี token แล้ว) — ไว้ทดสอบข้ามวิชา */
-export function getCourseIdByCode(
-  token: string,
-  courseCode: string
-): Cypress.Chainable<string> {
-  return cy
-    .request({ url: `${BACKEND_URL}/courses`, headers: authHeader(token) })
-    .then((res) => {
-      const course = (res.body.data as { id: string; courseCode: string }[]).find(
-        (c) => c.courseCode === courseCode
-      );
-      if (!course) throw new Error(`ไม่พบวิชา ${courseCode}`);
-      return course.id;
+  cy.then(() => {
+    api("GET", `/rounds?courseId=${seed.course.id}`).then((res) => {
+      const [r1, r2, r3] = res.body.data;
+      seed.rounds = { released: r1.id, closed: r2.id, open: r3.id };
     });
+    api("GET", `/rounds?courseId=${seed.course2.id}`).then((res) => {
+      const [r1, r2] = res.body.data;
+      seed.rounds2 = { released: r1.id, open: r2.id };
+    });
+    api("GET", `/groups?courseId=${seed.course.id}`).then((res) => {
+      const group = (name: string) => {
+        const g = res.body.data.groups.find((x: { name: string }) => x.name === `Team ${name}`);
+        return { id: g.id, members: g.members.map((m: Member) => ({ id: m.id, name: m.name })) };
+      };
+      seed.groups = {
+        alpha: group("Alpha"),
+        beta: group("Beta"),
+        gamma: group("Gamma"),
+        delta: group("Delta"),
+        epsilon: group("Epsilon"),
+      };
+    });
+    api("GET", `/courses/${seed.course.id}/students`).then((res) => {
+      const idOf = (account: string) => res.body.data.find((s: { cmuAccount: string }) => s.cmuAccount === account).id;
+      seed.ids = Object.fromEntries(
+        Object.entries(ACCOUNTS)
+          .filter(([key]) => key !== "instructor")
+          .map(([key, account]) => [key, idOf(account)])
+      ) as Seed["ids"];
+    });
+  });
+
+  return cy.then(() => seed);
+}
+
+export interface EvalForm {
+  targets: { id: string; isSelf: boolean }[];
+  questions: { id: string; type: "rating" | "text"; orderNo: number }[];
+}
+
+/** คำตอบครบทุกช่องของฟอร์ม: คะแนนเดียวกันทุกข้อ และความเห็นเดียวกันทุกช่อง */
+export function fullAnswers(form: EvalForm, score = 4, comment = "ทำงานส่วนของตัวเองได้ดีและส่งตรงเวลา") {
+  return form.questions.flatMap((q) =>
+    form.targets.map((t) => ({
+      questionId: q.id,
+      evaluateeId: t.id,
+      score: q.type === "rating" ? score : null,
+      comment: q.type === "text" ? comment : null,
+    }))
+  );
 }

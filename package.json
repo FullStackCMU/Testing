@@ -4,7 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "cypress open"
+    "test": "cypress open",
+    "test:run": "cypress run",
+    "test:api": "cypress run --spec cypress/e2e/api.cy.ts",
+    "test:ui": "cypress run --spec cypress/e2e/ui.cy.ts"
   },
   "keywords": [],
   "author": "",
@@ -20,9 +23,12 @@
   "dependencies": {
     "@tsconfig/node-lts": "^24.0.0",
     "@tsconfig/node-ts": "^23.6.4",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^26.1.1",
     "cypress": "^15.18.1",
     "dotenv": "^17.4.2",
+    "jsonwebtoken": "^9.0.3",
+    "postgres": "^3.4.9",
     "typescript": "^6.0.3"
   }
 }
